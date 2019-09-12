@@ -282,7 +282,7 @@ class SubWorkflowModule( WorkflowModule ):
                     name=name,
                     label=name,
                     multiple=False,
-                    extensions="input",
+                    extensions=["data"],
                     input_type=step_to_input_type[step_type],
                 )
                 inputs.append(input)
@@ -294,13 +294,29 @@ class SubWorkflowModule( WorkflowModule ):
             for workflow_output in self.subworkflow.workflow_outputs:
                 output_step = workflow_output.workflow_step
                 label = workflow_output.label
-                if label is None:
-                    label = "%s:%s" % (output_step.order_index, workflow_output.output_name)
+                target_output_name = workflow_output.output_name
+                if not label:
+                    label = "%s:%s" % (output_step.order_index, target_output_name)
+                output_module = module_factory.from_workflow_step(self.trans, output_step)
+                data_outputs = output_module.get_data_outputs()
+                target_output = {}
+                for data_output in data_outputs:
+                    if data_output["name"] == target_output_name:
+                        target_output = data_output
                 output = dict(
                     name=label,
                     label=label,
-                    extensions=['input'],  # TODO
+                    extensions=target_output.get('extensions', ['input']),
                 )
+                if target_output.get("collection"):
+                    output["collection"] = True
+                    output["collection_type"] = target_output["collection_type"]
+                    # TODO: collection_type_source should be set here to be more percise/correct -
+                    # but it can't be passed through as is since it would reference something
+                    # the editor can't see. Since we fix input collection types to workflows
+                    # the more correct thing to do would be to walk the subworkflow and
+                    # determine the effective collection type if collection_type_source
+                    # is set.
                 outputs.append(output)
         return outputs
 
@@ -560,7 +576,9 @@ class ToolModule( WorkflowModule ):
         tool_id = d.get( 'content_id' ) or d.get( 'tool_id' )
         if tool_id is None:
             raise exceptions.RequestParameterInvalidException( "No tool id could be located for step [%s]." % d )
-        tool_version = str( d.get( 'tool_version' ) )
+        tool_version = d.get( 'tool_version' )
+        if tool_version:
+            tool_version = str(tool_version)
         module = super( ToolModule, Class ).from_dict( trans, d, tool_id=tool_id, tool_version=tool_version, exact_tools=exact_tools )
         module.post_job_actions = d.get( 'post_job_actions', {} )
         module.workflow_outputs = d.get( 'workflow_outputs', [] )
@@ -1060,14 +1078,16 @@ class WorkflowModuleInjector(object):
         # Populate module.
         module = step.module = module_factory.from_workflow_step( self.trans, step )
 
-        # Fix any missing parameters
-        step.upgrade_messages = module.check_and_update_state()
-
         # Any connected input needs to have value DummyDataset (these
         # are not persisted so we need to do it every time)
         module.add_dummy_datasets( connections=step.input_connections, steps=steps )
         state, step_errors = module.compute_runtime_state( self.trans, step_args )
         step.state = state
+
+        # Fix any missing parameters
+        step.upgrade_messages = module.check_and_update_state()
+
+        # Populate subworkflow components
         if step.type == "subworkflow":
             subworkflow = step.subworkflow
             populate_module_and_state( self.trans, subworkflow, param_map={}, )

@@ -7,6 +7,7 @@ from __future__ import absolute_import  # Need to import pulsar_client absolutel
 import errno
 import logging
 import os
+import subprocess
 from distutils.version import LooseVersion
 from time import sleep
 
@@ -217,7 +218,7 @@ class PulsarJobRunner( AsynchronousJobRunner ):
         else:
             log.info("Loading Pulsar app configuration from %s" % pulsar_conf_path)
             with open(pulsar_conf_path, "r") as f:
-                conf.update(yaml.load(f) or {})
+                conf.update(yaml.safe_load(f) or {})
         if "job_metrics_config_file" not in conf:
             conf["job_metrics"] = self.app.job_metrics
         if "staging_directory" not in conf:
@@ -382,8 +383,7 @@ class PulsarJobRunner( AsynchronousJobRunner ):
         prepare_input_files_cmds = getattr(job_wrapper, 'prepare_input_files_cmds', None)
         if prepare_input_files_cmds is not None:
             for cmd in prepare_input_files_cmds:  # run the commands to stage the input files
-                if 0 != os.system(cmd):
-                    raise Exception('Error running file staging command: %s' % cmd)
+                subprocess.check_call(cmd, shell=True)
             job_wrapper.prepare_input_files_cmds = None  # prevent them from being used in-line
 
     def _populate_parameter_defaults( self, job_destination ):
@@ -687,11 +687,11 @@ class PulsarJobRunner( AsynchronousJobRunner ):
                     remote_datatypes_config = os.path.join(remote_galaxy_home, 'datatypes_conf.xml')
                 metadata_kwds['datatypes_config'] = remote_datatypes_config
             else:
-                integrates_datatypes_config = self.app.datatypes_registry.integrated_datatypes_configs
+                datatypes_config = os.path.join(configs_directory, 'registry.xml')
+                self.app.datatypes_registry.to_xml_file(path=datatypes_config)
                 # Ensure this file gets pushed out to the remote config dir.
-                job_wrapper.extra_filenames.append(integrates_datatypes_config)
-
-                metadata_kwds['datatypes_config'] = os.path.join(configs_directory, os.path.basename(integrates_datatypes_config))
+                job_wrapper.extra_filenames.append(datatypes_config)
+                metadata_kwds['datatypes_config'] = datatypes_config
         return metadata_kwds
 
 

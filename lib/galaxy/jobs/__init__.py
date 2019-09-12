@@ -866,6 +866,9 @@ class JobWrapper( object, HasResourceParameters ):
         self.galaxy_lib_dir
         # Shell fragment to inject dependencies
         self.dependency_shell_commands = self.tool.build_dependency_shell_commands(job_directory=self.working_directory)
+        if self.tool.requires_galaxy_python_environment:
+            # These tools (upload, metadata, data_source) may need access to the datatypes registry.
+            self.app.datatypes_registry.to_xml_file(os.path.join(self.working_directory, 'registry.xml'))
         # We need command_line persisted to the db in order for Galaxy to re-queue the job
         # if the server was stopped and restarted before the job finished
         job.command_line = unicodify(self.command_line)
@@ -1647,8 +1650,7 @@ class JobWrapper( object, HasResourceParameters ):
 
     def setup_external_metadata( self, exec_dir=None, tmp_dir=None,
                                  dataset_files_path=None, config_root=None,
-                                 config_file=None, datatypes_config=None,
-                                 resolve_metadata_dependencies=False,
+                                 config_file=None, resolve_metadata_dependencies=False,
                                  set_extension=True, **kwds ):
         # extension could still be 'auto' if this is the upload tool.
         job = self.get_job()
@@ -1667,8 +1669,8 @@ class JobWrapper( object, HasResourceParameters ):
             config_root = self.app.config.root
         if config_file is None:
             config_file = self.app.config.config_file
-        if datatypes_config is None:
-            datatypes_config = self.app.datatypes_registry.integrated_datatypes_configs
+        datatypes_config = os.path.join(self.working_directory, 'registry.xml')
+        self.app.datatypes_registry.to_xml_file(path=datatypes_config)
         command = self.external_output_metadata.setup_external_metadata( [ output_dataset_assoc.dataset for
                                                                            output_dataset_assoc in
                                                                            job.output_datasets + job.output_library_datasets ],
@@ -1995,8 +1997,7 @@ class TaskWrapper(JobWrapper):
         pass
 
     def setup_external_metadata( self, exec_dir=None, tmp_dir=None, dataset_files_path=None,
-                                 config_root=None, config_file=None, datatypes_config=None,
-                                 set_extension=True, **kwds ):
+                                 config_root=None, config_file=None, set_extension=True, **kwds ):
         # There is no metadata setting for tasks.  This is handled after the merge, at the job level.
         return ""
 

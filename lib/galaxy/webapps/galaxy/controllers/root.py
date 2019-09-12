@@ -1,10 +1,12 @@
 """
 Contains the main interface in the Universe class
 """
+from __future__ import absolute_import
+
 import cgi
 import os
-import urllib
 
+import requests
 from paste.httpexceptions import HTTPNotFound, HTTPBadGateway
 
 from galaxy import web
@@ -273,20 +275,6 @@ class RootController( controller.JSAppLauncher, UsesAnnotations ):
         else:
             return "No data with id=%d" % id
 
-    @web.expose
-    def peek(self, trans, id=None):
-        """Returns a 'peek' at the data.
-        """
-        # TODO: unused?
-        # TODO: unencoded id
-        data = trans.sa_session.query( self.app.model.HistoryDatasetAssociation ).get( id )
-        if data:
-            yield "<html><body><pre>"
-            yield data.peek
-            yield "</pre></body></html>"
-        else:
-            yield "No data with id=%d" % id
-
     # ---- History management -----------------------------------------------
     @web.expose
     def history_delete( self, trans, id ):
@@ -480,8 +468,8 @@ class RootController( controller.JSAppLauncher, UsesAnnotations ):
     def bucket_proxy( self, trans, bucket=None, **kwd):
         if bucket:
             trans.response.set_content_type( 'text/xml' )
-            b_list_xml = urllib.urlopen('http://s3.amazonaws.com/%s/' % bucket)
-            return b_list_xml.read()
+            b_list_xml = requests.get('http://s3.amazonaws.com/%s/' % bucket)
+            return b_list_xml.text
         raise Exception("You must specify a bucket")
 
     # ---- Debug methods ----------------------------------------------------

@@ -1,4 +1,7 @@
+from __future__ import absolute_import
+
 import glob
+import json
 import logging
 import operator
 import os
@@ -8,10 +11,9 @@ import sys
 import tarfile
 import tempfile
 import urllib
-import urllib2
 import zipfile
-from json import dumps, loads
 
+import requests
 from markupsafe import escape
 from sqlalchemy import and_, false
 from sqlalchemy.orm import eagerload_all
@@ -21,6 +23,7 @@ from galaxy.security import Action
 from galaxy.tools.actions import upload_common
 from galaxy.tools.parameters import populate_state
 from galaxy.util import inflector, unicodify, FILENAME_VALID_CHARS
+from galaxy.util.path import safe_contains, safe_relpath, unsafe_walk
 from galaxy.util.streamball import StreamBall
 from galaxy.web.base.controller import BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMetadataMixin, UsesLibraryMixinItems
 from galaxy.web.form_builder import AddressField, CheckboxField, SelectField, build_select_field
@@ -70,6 +73,7 @@ except:
 
 class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMetadataMixin, UsesLibraryMixinItems ):
     @web.json
+    @web.require_admin
     def library_item_updates( self, trans, ids=None, states=None ):
         # Avoid caching
         trans.response.headers['Pragma'] = 'no-cache'
@@ -93,6 +97,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
         return rval
 
     @web.expose
+    @web.require_admin
     def browse_library( self, trans, cntrller='library', **kwd ):
         message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
@@ -165,6 +170,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
                                                           status=status ) )
 
     @web.expose
+    @web.require_admin
     def library_info( self, trans, cntrller, **kwd ):
         message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
@@ -224,6 +230,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
                                     status=escape( status ) )
 
     @web.expose
+    @web.require_admin
     def library_permissions( self, trans, cntrller, **kwd ):
         message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
@@ -346,6 +353,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
                                     status=escape( status ) )
 
     @web.expose
+    @web.require_admin
     def folder_info( self, trans, cntrller, id, library_id, **kwd ):
         message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
@@ -402,6 +410,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
                                     status=escape( status ) )
 
     @web.expose
+    @web.require_admin
     def folder_permissions( self, trans, cntrller, id, library_id, **kwd ):
         message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
@@ -452,6 +461,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
                                     status=escape( status ) )
 
     @web.expose
+    @web.require_admin
     def ldda_edit_info( self, trans, cntrller, library_id, folder_id, id, **kwd ):
         message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
@@ -555,7 +565,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
             if len(em_string):
                 payload = None
                 try:
-                    payload = loads(em_string)
+                    payload = json.loads(em_string)
                 except Exception:
                     message = 'Invalid JSON input'
                     status = 'error'
@@ -603,6 +613,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
                                     status=escape( status ) )
 
     @web.expose
+    @web.require_admin
     def ldda_info( self, trans, cntrller, library_id, folder_id, id, **kwd ):
         message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
@@ -652,6 +663,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
                                     status=escape( status ) )
 
     @web.expose
+    @web.require_admin
     def ldda_permissions( self, trans, cntrller, library_id, folder_id, id, **kwd ):
         message = str( escape( kwd.get( 'message', '' ) ) )
         status = kwd.get( 'status', 'done' )
@@ -849,6 +861,9 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
             elif upload_option == 'upload_paths' and not is_admin:
                 error = True
                 message = 'Uploading files via filesystem paths can only be performed by administrators'
+            elif upload_option not in ('upload_file', 'upload_directory', 'upload_paths'):
+                error = True
+                message = 'Invalid upload_option'
             elif roles:
                 # Check to see if the user selected roles to associate with the DATASET_ACCESS permission
                 # on the dataset that would cause accessibility issues.
@@ -1064,17 +1079,26 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
         if upload_option == 'upload_directory':
             if server_dir in [ None, 'None', '' ]:
                 response_code = 400
-            if cntrller == 'library_admin' or ( cntrller == 'api' and trans.user_is_admin ):
+            if trans.user_is_admin() and cntrller in ( 'library_admin', 'api' ):
                 import_dir = trans.app.config.library_import_dir
                 import_dir_desc = 'library_import_dir'
-                full_dir = os.path.join( import_dir, server_dir )
             else:
                 import_dir = trans.app.config.user_library_import_dir
+                if server_dir != trans.user.email:
+                    import_dir = os.path.join( import_dir, trans.user.email )
                 import_dir_desc = 'user_library_import_dir'
-                if server_dir == trans.user.email:
-                    full_dir = os.path.join( import_dir, server_dir )
-                else:
-                    full_dir = os.path.join( import_dir, trans.user.email, server_dir )
+            full_dir = os.path.join( import_dir, server_dir )
+            unsafe = None
+            if safe_relpath( server_dir ):
+                if import_dir_desc == 'user_library_import_dir' and safe_contains( import_dir, full_dir, whitelist=trans.app.config.user_library_import_symlink_whitelist ):
+                    for unsafe in unsafe_walk( full_dir, whitelist=[import_dir] + trans.app.config.user_library_import_symlink_whitelist ):
+                        log.error( 'User attempted to import a path that resolves to a path outside of their import dir: %s -> %s', unsafe, os.path.realpath(unsafe) )
+            else:
+                log.error( 'User attempted to import a directory path that resolves to a path outside of their import dir: %s -> %s', server_dir, os.path.realpath(full_dir) )
+                unsafe = True
+            if unsafe:
+                response_code = 403
+                message = 'Invalid server_dir'
             if import_dir:
                 message = 'Select a directory'
             else:
@@ -1122,8 +1146,8 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
         json_file_path = upload_common.create_paramfile( trans, uploaded_datasets )
         data_list = [ ud.data for ud in uploaded_datasets ]
         job_params = {}
-        job_params['link_data_only'] = dumps( kwd.get( 'link_data_only', 'copy_files' ) )
-        job_params['uuid'] = dumps( kwd.get( 'uuid', None ) )
+        job_params['link_data_only'] = json.dumps(kwd.get('link_data_only', 'copy_files'))
+        job_params['uuid'] = json.dumps(kwd.get('uuid', None))
         job, output = upload_common.create_job( trans, tool_params, tool, json_file_path, data_list, folder=library_bunch.folder, job_params=job_params )
         trans.sa_session.add( job )
         trans.sa_session.flush()
@@ -1267,6 +1291,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
         return None
 
     @web.expose
+    @web.require_admin
     def add_history_datasets_to_library( self, trans, cntrller, library_id, folder_id, hda_ids='', **kwd ):
         message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
@@ -1509,6 +1534,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
         return upload_option_select_list
 
     @web.expose
+    @web.require_admin
     def download_dataset_from_folder( self, trans, cntrller, id, library_id=None, **kwd ):
         """Catches the dataset id and displays file contents as directed"""
         show_deleted = util.string_as_bool( kwd.get( 'show_deleted', False ) )
@@ -1548,6 +1574,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
                                                           status='error' ) )
 
     @web.expose
+    @web.require_admin
     def library_dataset_info( self, trans, cntrller, id, library_id, **kwd ):
         message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
@@ -1596,6 +1623,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
                                     status=escape( status ) )
 
     @web.expose
+    @web.require_admin
     def library_dataset_permissions( self, trans, cntrller, id, library_id, **kwd ):
         message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
@@ -1644,6 +1672,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
                                     status=escape( status ) )
 
     @web.expose
+    @web.require_admin
     def make_library_item_public( self, trans, cntrller, library_id, item_type, id, **kwd ):
         message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
@@ -1686,6 +1715,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
                                                           status=status ) )
 
     @web.expose
+    @web.require_admin
     def act_on_multiple_datasets( self, trans, cntrller, library_id=None, ldda_ids='', **kwd ):
         # This method is called from 1 of 3 places:
         # - this controller's download_dataset_from_folder() method
@@ -1978,6 +2008,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
                                         status=escape( status ) )
 
     @web.expose
+    @web.require_admin
     def import_datasets_to_histories( self, trans, cntrller, library_id='', folder_id='', ldda_ids='', target_history_id='', target_history_ids='', new_history_name='', **kwd ):
         # This method is called from one of the following places:
         # - a menu option for a library dataset ( ldda_ids is a single ldda id )
@@ -2108,6 +2139,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
                                     status=escape( status ) )
 
     @web.expose
+    @web.require_admin
     def manage_template_inheritance( self, trans, cntrller, item_type, library_id, folder_id=None, ldda_id=None, **kwd ):
         show_deleted = util.string_as_bool( kwd.get( 'show_deleted', False ) )
         use_panels = util.string_as_bool( kwd.get( 'use_panels', False ) )
@@ -2153,6 +2185,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
                                                           status='done' ) )
 
     @web.expose
+    @web.require_admin
     def move_library_item( self, trans, cntrller, item_type, item_id, source_library_id='', make_target_current=True, **kwd ):
         # This method is called from one of the following places:
         # - a menu option for a library dataset ( item_type is 'ldda' and item_id is a single ldda id )
@@ -2370,6 +2403,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
                                     status=escape( status ) )
 
     @web.expose
+    @web.require_admin
     def delete_library_item( self, trans, cntrller, library_id, item_id, item_type, **kwd ):
         # This action will handle deleting all types of library items.  State is saved for libraries and
         # folders ( i.e., if undeleted, the state of contents of the library or folder will remain, so previously
@@ -2438,6 +2472,7 @@ class LibraryCommon( BaseUIController, UsesFormDefinitionsMixin, UsesExtendedMet
                                                               status=status ) )
 
     @web.expose
+    @web.require_admin
     def undelete_library_item( self, trans, cntrller, library_id, item_id, item_type, **kwd ):
         # This action will handle undeleting all types of library items
         status = kwd.get( 'status', 'done' )
@@ -2761,9 +2796,7 @@ def lucene_search( trans, cntrller, search_term, search_url, **kwd ):
     message = escape( kwd.get( 'message', '' ) )
     status = kwd.get( 'status', 'done' )
     full_url = "%s/find?%s" % ( search_url, urllib.urlencode( { "kwd" : search_term } ) )
-    response = urllib2.urlopen( full_url )
-    ldda_ids = loads( response.read() )[ "ids" ]
-    response.close()
+    ldda_ids = requests.get(full_url).json()['ids']
     lddas = [ trans.sa_session.query( trans.app.model.LibraryDatasetDatasetAssociation ).get( ldda_id ) for ldda_id in ldda_ids ]
     return status, message, get_sorted_accessible_library_items( trans, cntrller, lddas, 'name' )
 
