@@ -4,11 +4,13 @@ import os
 from galaxy.tools.cwl import tool_proxy
 from galaxy.tools.deps import requirements
 from galaxy.util.odict import odict
-
-from .interface import PageSource
-from .interface import PagesSource
-from .interface import ToolSource
-from .interface import ToolStdioExitCode
+from .error_level import StdioErrorLevel
+from .interface import (
+    PageSource,
+    PagesSource,
+    ToolSource,
+    ToolStdioExitCode
+)
 from .output_actions import ToolOutputActionGroup
 from .output_objects import ToolOutput
 from .yaml import YamlInputSource
@@ -76,8 +78,6 @@ class CwlToolSource(ToolSource):
 
     def parse_stdio(self):
         # TODO: remove duplication with YAML
-        from galaxy.jobs.error_level import StdioErrorLevel
-
         # New format - starting out just using exit code.
         exit_code_lower = ToolStdioExitCode()
         exit_code_lower.range_start = float("-inf")
@@ -116,7 +116,7 @@ class CwlToolSource(ToolSource):
     def _parse_output(self, tool, output_instance):
         name = output_instance.name
         # TODO: handle filters, actions, change_format
-        output = ToolOutput( name )
+        output = ToolOutput(name)
         if "File" in output_instance.output_data_type:
             output.format = "_sniff_"
         else:
@@ -131,7 +131,7 @@ class CwlToolSource(ToolSource):
         output.tool = tool
         output.hidden = ""
         output.dataset_collector_descriptions = []
-        output.actions = ToolOutputActionGroup( output, None )
+        output.actions = ToolOutputActionGroup(output, None)
         return output
 
     def parse_requirements_and_containers(self):
@@ -140,13 +140,18 @@ class CwlToolSource(ToolSource):
         if docker_identifier:
             containers.append({"type": "docker",
                                "identifier": docker_identifier})
+
+        software_requirements = self.tool_proxy.software_requirements()
         return requirements.parse_requirements_from_dict(dict(
-            requirements=[],  # TODO: enable via extensions
+            requirements=list(map(lambda r: {"name": r[0], "version": r[1], "type": "package"}, software_requirements)),
             containers=containers,
         ))
 
     def parse_profile(self):
         return "16.04"
+
+    def parse_python_template_version(self):
+        return '3.5'
 
 
 class CwlPageSource(PageSource):

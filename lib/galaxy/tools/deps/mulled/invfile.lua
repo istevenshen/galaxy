@@ -42,8 +42,21 @@ end
 
 local conda_image = VAR.CONDA_IMAGE
 if conda_image == '' then
-    conda_image = 'continuumio/miniconda:latest'
+    conda_image = 'continuumio/miniconda3:latest'
 end
+
+
+local singularity_image = VAR.SINGULARITY_IMAGE
+if singularity_image == '' then
+    singularity_image = 'quay.io/biocontainers/singularity:2.4.6--0'
+end
+
+local singularity_image_dir = VAR.SINGULARITY_IMAGE_DIR
+if singularity_image_dir == '' then
+    singularity_image_dir = 'singularity_import'
+end
+
+
 
 local destination_base_image = VAR.DEST_BASE_IMAGE
 if destination_base_image == '' then
@@ -85,6 +98,21 @@ inv.task('build')
         .inImage(destination_base_image)
         .as(repo)
 
+if VAR.SINGULARITY ~= '' then
+    inv.task('singularity')
+        .using(singularity_image)
+        .withHostConfig({binds = {"build:/data",singularity_image_dir .. ":/import"}, privileged = true})
+        .withConfig({entrypoint = {'/bin/sh', '-c'}})
+        .run('mkdir -p /usr/local/var/singularity/mnt/container && singularity build /import/' .. VAR.SINGULARITY_IMAGE_NAME .. ' /import/Singularity.def')
+        .run('chown ' .. VAR.USER_ID .. ' /import/' .. VAR.SINGULARITY_IMAGE_NAME)
+end
+
+inv.task('cleanup')
+    .using(conda_image)
+    .withHostConfig({binds = {"build:/data"}})
+    .run('rm', '-rf', '/data/dist')
+
+
 if VAR.TEST_BINDS == '' then
     inv.task('test')
         .using(repo)
@@ -103,9 +131,14 @@ inv.task('push')
 
 inv.task('build-and-test')
     .runTask('build')
+    .runTask('singularity')
+    .runTask('cleanup')
     .runTask('test')
+
 
 inv.task('all')
     .runTask('build')
+    .runTask('singularity')
+    .runTask('cleanup')
     .runTask('test')
     .runTask('push')

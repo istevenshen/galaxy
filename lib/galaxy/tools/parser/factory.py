@@ -5,14 +5,12 @@ import logging
 
 import yaml
 
-from galaxy.tools.loader import load_tool as load_tool_xml
+from galaxy.tools.loader import load_tool_with_refereces
 from galaxy.util.odict import odict
-
 from .cwl import CwlToolSource
 from .interface import InputSource
 from .xml import XmlInputSource, XmlToolSource
 from .yaml import YamlToolSource
-
 from ..fetcher import ToolLocationFetcher
 
 log = logging.getLogger(__name__)
@@ -22,7 +20,7 @@ def get_tool_source(config_file=None, xml_tree=None, enable_beta_formats=True, t
     """Return a ToolSource object corresponding to supplied source.
 
     The supplied source may be specified as a file path (using the config_file
-    parameter) or as an XML object loaded with load_tool_xml.
+    parameter) or as an XML object loaded with load_tool_with_refereces.
     """
     if xml_tree is not None:
         return XmlToolSource(xml_tree, source_path=config_file)
@@ -34,8 +32,8 @@ def get_tool_source(config_file=None, xml_tree=None, enable_beta_formats=True, t
 
     config_file = tool_location_fetcher.to_tool_path(config_file)
     if not enable_beta_formats:
-        tree = load_tool_xml(config_file)
-        return XmlToolSource(tree, source_path=config_file)
+        tree, macro_paths = load_tool_with_refereces(config_file)
+        return XmlToolSource(tree, source_path=config_file, macro_paths=macro_paths)
 
     if config_file.endswith(".yml"):
         log.info("Loading tool from YAML - this is experimental - tool will not function in future.")
@@ -46,8 +44,8 @@ def get_tool_source(config_file=None, xml_tree=None, enable_beta_formats=True, t
         log.info("Loading CWL tool - this is experimental - tool likely will not function in future at least in same way.")
         return CwlToolSource(config_file)
     else:
-        tree = load_tool_xml(config_file)
-        return XmlToolSource(tree, source_path=config_file)
+        tree, macro_paths = load_tool_with_refereces(config_file)
+        return XmlToolSource(tree, source_path=config_file, macro_paths=macro_paths)
 
 
 def ordered_load(stream):
@@ -63,6 +61,17 @@ def ordered_load(stream):
         construct_mapping)
 
     return yaml.load(stream, OrderedLoader)
+
+
+def get_tool_source_from_representation(tool_format, tool_representation):
+    # TODO: make sure whatever is consuming this method uses ordered load.
+    log.info("Loading dynamic tool - this is experimental - tool may not function in future.")
+    if tool_format == "GalaxyTool":
+        if "version" not in tool_representation:
+            tool_representation["version"] = "1.0.0"  # Don't require version for embedded tools.
+        return YamlToolSource(tool_representation)
+    else:
+        raise Exception("Unknown tool representation format [%s]." % tool_format)
 
 
 def get_input_source(content):
