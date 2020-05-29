@@ -3,7 +3,7 @@ import Utils from "utils/utils";
 // grid view templates
 export default {
     // template
-    grid: function(options) {
+    grid: function (options) {
         var tmpl = "";
         if (options.embedded) {
             tmpl = this.grid_header(options) + this.grid_table(options);
@@ -25,7 +25,7 @@ export default {
     },
 
     // template
-    grid_table: function() {
+    grid_table: function () {
         return `
             <form method="post" onsubmit="return false;">
                 <table id="grid-table" class="grid">
@@ -37,7 +37,7 @@ export default {
     },
 
     // template
-    grid_header: function(options) {
+    grid_header: function (options) {
         var tmpl = '<div class="grid-header">';
         if (!options.embedded) {
             tmpl += `<h2>${options.title}</h2>`;
@@ -51,9 +51,7 @@ export default {
                     '<div popupmenu="popup-global-actions">';
             }
             for (let action of options.global_actions) {
-                tmpl += `<li><a class="action-button use-target" target="${action.target}" href="${
-                    action.url_args
-                }" onclick="return false;" >${action.label}</a></li>`;
+                tmpl += `<li><a class="action-button use-target" target="${action.target}" href="${action.url_args}" onclick="return false;" >${action.label}</a></li>`;
             }
             if (show_popup) {
                 tmpl += "</div>";
@@ -73,7 +71,7 @@ export default {
     },
 
     // template
-    header: function(options) {
+    header: function (options) {
         // start
         var tmpl = "<tr>";
 
@@ -109,7 +107,7 @@ export default {
     },
 
     // template
-    body: function(options) {
+    body: function (options) {
         // initialize
         var tmpl = "";
         var items_length = options.items.length;
@@ -131,9 +129,7 @@ export default {
 
             // Item selection column
             if (options.show_item_checkboxes) {
-                tmpl += `<td style="width: 1.5em;"><input type="checkbox" name="id" value="${item.encode_id}" id="${
-                    item.encode_id
-                }" class="grid-row-select-checkbox" /></td>`;
+                tmpl += `<td style="width: 1.5em;"><input type="checkbox" name="id" value="${item.encode_id}" id="${item.encode_id}" class="grid-row-select-checkbox" /></td>`;
             }
 
             // Data columns
@@ -196,7 +192,7 @@ export default {
     },
 
     // template
-    footer: function(options) {
+    footer: function (options) {
         // create template string
         var tmpl = "";
 
@@ -288,9 +284,7 @@ export default {
             // configure buttons for operations
             for (let operation of options.operations) {
                 if (operation.allow_multiple) {
-                    tmpl += `<input type="button" value="${
-                        operation.label
-                    }" class="operation-button action-button">&nbsp;`;
+                    tmpl += `<input type="button" value="${operation.label}" class="operation-button action-button">&nbsp;`;
                 }
             }
 
@@ -328,7 +322,7 @@ export default {
     },
 
     // template
-    message: function(options) {
+    message: function (options) {
         var status = options.status;
         if (["success", "ok"].indexOf(status) != -1) {
             status = "done";
@@ -339,7 +333,7 @@ export default {
     },
 
     // template
-    grid_filters: function(options) {
+    grid_filters: function (options) {
         // get filters
         var default_filter_dict = options.default_filter_dict;
         var filters = options.filters;
@@ -413,7 +407,7 @@ export default {
     },
 
     // template
-    grid_column_filter: function(options, column) {
+    grid_column_filter: function (options, column) {
         // collect parameters
         var filters = options.filters;
         var column_label = column.label;
@@ -439,9 +433,7 @@ export default {
                         if (column.is_text) {
                             filter_value = JSON.stringify(filter_value);
                         }
-                        tmpl += `<input type="hidden" id="${column.key}" name="f-${
-                            column.key
-                        }" value="${filter_value}"/>`;
+                        tmpl += `<input type="hidden" id="${column.key}" name="f-${column.key}" value="${filter_value}"/>`;
                     }
                 }
             }
@@ -540,8 +532,8 @@ export default {
     },
 
     // template for filter items
-    filter_element: function(filter_key, filter_value) {
+    filter_element: function (filter_key, filter_value) {
         filter_value = Utils.sanitize(filter_value);
         return `<span class="text-filter-val">${filter_value}<a href="javascript:void(0);" filter_key="${filter_key}" filter_val="${filter_value}"><i class="fa fa-times" style="padding-left: 5px; padding-bottom: 6px;"/></a></span>`;
-    }
+    },
 };

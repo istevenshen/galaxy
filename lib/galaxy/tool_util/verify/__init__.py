@@ -16,6 +16,10 @@ try:
 except ImportError:
     pysam = None
 
+from galaxy.tool_util.parser.util import (
+    DEFAULT_DELTA,
+    DEFAULT_DELTA_FRAC
+)
 from galaxy.util import unicodify
 from galaxy.util.compression_utils import get_fileobj
 from .asserts import verify_assertions
@@ -86,17 +90,16 @@ def verify(
         attributes = {}
 
     if filename is not None:
-        if mode == 'directory':
-            # if verifying a file inside a extra_files_path directory
-            # filename already point to a file that exists on disk
-            local_name = filename
-        else:
-            local_name = get_filename(filename)
         temp_name = make_temp_fname(fname=filename)
         with open(temp_name, 'wb') as f:
             f.write(output_content)
 
-        # if the server's env has GALAXY_TEST_SAVE, save the output file to that dir
+        # If the server's env has GALAXY_TEST_SAVE, save the output file to that
+        # directory.
+        # This needs to be done before the call to `get_filename()` because that
+        # may raise an exception if `filename` does not exist (e.g. when
+        # generating a tool output file from scratch with
+        # `planemo test --update_test_data`).
         if keep_outputs_dir:
             ofn = os.path.join(keep_outputs_dir, filename)
             out_dir = os.path.dirname(ofn)
@@ -109,6 +112,14 @@ def verify(
                 log.exception('Could not save output file %s to %s', temp_name, ofn)
             else:
                 log.debug('## GALAXY_TEST_SAVE=%s. saved %s', keep_outputs_dir, ofn)
+
+        if mode == 'directory':
+            # if verifying a file inside a extra_files_path directory
+            # filename already point to a file that exists on disk
+            local_name = filename
+        else:
+            local_name = get_filename(filename)
+
         compare = attributes.get('compare', 'diff')
         try:
             if attributes.get('ftype', None) in ['bam', 'qname_sorted.bam', 'qname_input_sorted.bam', 'unsorted.bam', 'cram']:
@@ -124,11 +135,7 @@ def verify(
             elif compare == 're_match_multiline':
                 files_re_match_multiline(local_name, temp_name, attributes=attributes)
             elif compare == 'sim_size':
-                delta = attributes.get('delta', '100')
-                s1 = len(output_content)
-                s2 = os.path.getsize(local_name)
-                if abs(s1 - s2) > int(delta):
-                    raise AssertionError('Files %s=%db but %s=%db - compare by size (delta=%s) failed' % (temp_name, s1, local_name, s2, delta))
+                files_delta(local_name, temp_name, attributes=attributes)
             elif compare == "contains":
                 files_contains(local_name, temp_name, attributes=attributes)
             else:
@@ -184,6 +191,20 @@ def _verify_checksum(data, checksum_type, expected_checksum_value):
         template = "Output checksum [%s] does not match expected [%s] (using hash algorithm %s)."
         message = template % (actual_checksum_value, expected_checksum_value, checksum_type)
         raise AssertionError(message)
+
+
+def files_delta(file1, file2, attributes=None):
+    """Check the contents of 2 files for size differences."""
+    if attributes is None:
+        attributes = {}
+    delta = attributes.get('delta', DEFAULT_DELTA)
+    delta_frac = attributes.get('delta_frac', DEFAULT_DELTA_FRAC)
+    s1 = os.path.getsize(file1)
+    s2 = os.path.getsize(file2)
+    if abs(s1 - s2) > delta:
+        raise AssertionError('Files %s=%db but %s=%db - compare by size (delta=%s) failed' % (file1, s1, file2, s2, delta))
+    if delta_frac is not None and not (s1 - (s1 * delta_frac) <= s2 <= s1 + (s1 * delta_frac)):
+        raise AssertionError('Files %s=%db but %s=%db - compare by size (delta_frac=%s) failed' % (file1, s1, file2, s2, delta_frac))
 
 
 def files_diff(file1, file2, attributes=None):

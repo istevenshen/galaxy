@@ -2,7 +2,6 @@
 Base classes for job runner plugins.
 """
 import datetime
-import logging
 import os
 import string
 import subprocess
@@ -39,10 +38,11 @@ from galaxy.util import (
     unicodify,
 )
 from galaxy.util.bunch import Bunch
+from galaxy.util.custom_logging import get_logger
 from galaxy.util.monitors import Monitors
 from .state_handler_factory import build_state_handlers
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 STOP_SIGNAL = object()
 
@@ -129,7 +129,13 @@ class BaseJobRunner(object):
             except Exception:
                 name = 'unknown'
             try:
+                action_str = 'galaxy.jobs.runners.%s.%s' % (self.__class__.__name__.lower(), name)
+                action_timer = self.app.execution_timer_factory.get_timer(
+                    'internals.%s' % action_str,
+                    'job runner action %s for job ${job_id} executed' % (action_str)
+                )
                 method(arg)
+                log.trace(action_timer.to_str(job_id=job_id))
             except Exception:
                 log.exception("(%s) Unhandled exception calling %s" % (job_id, name))
                 if not isinstance(arg, JobState):
@@ -394,8 +400,8 @@ class BaseJobRunner(object):
         options.update(**kwds)
         return job_script(**options)
 
-    def write_executable_script(self, path, contents, mode=0o755):
-        write_script(path, contents, self.app.config, mode=mode)
+    def write_executable_script(self, path, contents):
+        write_script(path, contents, self.app.config)
 
     def _find_container(
         self,
@@ -419,14 +425,24 @@ class BaseJobRunner(object):
             compute_tmp_directory = job_wrapper.tmp_directory()
 
         tool = job_wrapper.tool
-        guest_ports = [ep.get('port') for ep in getattr(job_wrapper, 'interactivetools', [])]
-        tool_info = ToolInfo(tool.containers, tool.requirements, tool.requires_galaxy_python_environment, tool.docker_env_pass_through, guest_ports=guest_ports)
+        guest_ports = job_wrapper.guest_ports
+        tool_info = ToolInfo(
+            tool.containers,
+            tool.requirements,
+            tool.requires_galaxy_python_environment,
+            tool.docker_env_pass_through,
+            guest_ports=guest_ports,
+            tool_id=tool.id,
+            tool_version=tool.version,
+            profile=tool.profile,
+        )
         job_info = JobInfo(
-            compute_working_directory,
-            compute_tool_directory,
-            compute_job_directory,
-            compute_tmp_directory,
-            job_directory_type,
+            working_directory=compute_working_directory,
+            tool_directory=compute_tool_directory,
+            job_directory=compute_job_directory,
+            tmp_directory=compute_tmp_directory,
+            home_directory=job_wrapper.home_directory(),
+            job_directory_type=job_directory_type,
         )
 
         destination_info = job_wrapper.job_destination.params
@@ -500,18 +516,18 @@ class BaseJobRunner(object):
                 job_stderr = None
 
             check_output_detected_state = job_wrapper.check_tool_output(tool_stdout, tool_stderr, tool_exit_code=exit_code, job=job, job_stdout=job_stdout, job_stderr=job_stderr)
-            job_not_ok = check_output_detected_state != DETECTED_JOB_STATE.OK
+            job_ok = check_output_detected_state == DETECTED_JOB_STATE.OK
 
             # clean up the job files
             cleanup_job = job_state.job_wrapper.cleanup_job
-            if cleanup_job == "always" or (job_not_ok and cleanup_job == "onsuccess"):
+            if cleanup_job == "always" or (job_ok and cleanup_job == "onsuccess"):
                 job_state.cleanup()
 
             # Flush with streams...
             self.sa_session.add(job)
             self.sa_session.flush()
 
-            if job_not_ok:
+            if not job_ok:
                 job_runner_state = JobState.runner_states.TOOL_DETECT_ERROR
                 if check_output_detected_state == DETECTED_JOB_STATE.OUT_OF_MEMORY_ERROR:
                     job_runner_state = JobState.runner_states.MEMORY_LIMIT_REACHED

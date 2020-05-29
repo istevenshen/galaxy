@@ -2,7 +2,6 @@
 Galaxy job handler, prepares, runs, tracks, and finishes Galaxy jobs
 """
 import datetime
-import logging
 import os
 import time
 from collections import defaultdict
@@ -29,11 +28,12 @@ from galaxy.jobs import (
 )
 from galaxy.jobs.mapper import JobNotReadyException
 from galaxy.util import unicodify
+from galaxy.util.custom_logging import get_logger
 from galaxy.util.monitors import Monitors
 from galaxy.web_stack.handlers import HANDLER_ASSIGNMENT_METHODS
 from galaxy.web_stack.message import JobHandlerMessage
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 # States for running a job. These are NOT the same as data states
 JOB_WAIT, JOB_ERROR, JOB_INPUT_ERROR, JOB_INPUT_DELETED, JOB_READY, JOB_DELETED, JOB_ADMIN_DELETED, JOB_USER_OVER_QUOTA, JOB_USER_OVER_TOTAL_WALLTIME = 'wait', 'error', 'input_error', 'input_deleted', 'ready', 'deleted', 'admin_deleted', 'user_over_quota', 'user_over_total_walltime'
@@ -96,10 +96,10 @@ class JobHandlerQueue(Monitors):
         self.__initialize_job_grabbing()
 
     def __initialize_job_grabbing(self):
-        grabbable_methods = set([
+        grabbable_methods = {
             HANDLER_ASSIGNMENT_METHODS.DB_TRANSACTION_ISOLATION,
             HANDLER_ASSIGNMENT_METHODS.DB_SKIP_LOCKED,
-        ])
+        }
         try:
             method = [m for m in self.app.job_config.handler_assignment_methods if m in grabbable_methods][0]
         except IndexError:
@@ -121,7 +121,7 @@ class JobHandlerQueue(Monitors):
             self.__grab_conn_opts['isolation_level'] = 'SERIALIZABLE'
         log.info(
             "Handler job grabber initialized with '%s' assignment method for handler '%s', tag(s): %s", method,
-            self.app.config.server_name, ', '.join([str(x) for x in self.app.job_config.handler_tags])
+            self.app.config.server_name, ', '.join(str(x) for x in self.app.job_config.handler_tags)
         )
 
     def start(self):
@@ -244,9 +244,14 @@ class JobHandlerQueue(Monitors):
         """
         Called repeatedly by `monitor` to process waiting jobs.
         """
+        monitor_step_timer = self.app.execution_timer_factory.get_timer(
+            'internal.galaxy.jobs.handlers.monitor_step',
+            'Job handler monitor step complete.'
+        )
         if self.__grab_query is not None:
             self.__grab_unhandled_jobs()
         self.__handle_waiting_jobs()
+        log.trace(monitor_step_timer.to_str())
 
     def __grab_unhandled_jobs(self):
         """
@@ -262,7 +267,7 @@ class JobHandlerQueue(Monitors):
             try:
                 rows = conn.execute(self.__grab_query).fetchall()
                 if rows:
-                    log.debug('Grabbed job(s): %s', ', '.join([str(row[0]) for row in rows]))
+                    log.debug('Grabbed job(s): %s', ', '.join(str(row[0]) for row in rows))
                     trans.commit()
                 else:
                     trans.rollback()

@@ -31,11 +31,11 @@ export class TagService {
      */
     get autocompleteOptions() {
         return this._searchText.pipe(
-            map(txt => txt.replace("name:", "")),
-            filter(txt => txt.length),
+            map((txt) => txt.replace("name:", "")),
+            filter((txt) => txt.length),
             debounceTime(this.debounceInterval),
             distinctUntilChanged(),
-            switchMap(txt => this.autocomplete(txt))
+            switchMap((txt) => this.autocomplete(txt))
         );
     }
 
@@ -73,9 +73,7 @@ export class TagService {
     async delete(rawTag) {
         const { id, itemClass, context } = this;
         const tag = createTag(rawTag);
-        const url = `/tag/remove_tag_async?item_id=${id}&item_class=${itemClass}&context=${context}&tag_name=${
-            tag.text
-        }`;
+        const url = `/tag/remove_tag_async?item_id=${id}&item_class=${itemClass}&context=${context}&tag_name=${tag.text}`;
         const response = await axios.get(url);
         if (response.status !== 200) {
             throw new Error(`Unable to delete tag: ${tag}`);
@@ -107,8 +105,8 @@ export class TagService {
 export function parseAutocompleteResults(rawResponse) {
     return rawResponse
         .split("\n")
-        .filter(line => line.includes("|"))
-        .map(line => line.split("|")[0])
-        .filter(label => label.length)
-        .filter(label => label !== "#Header");
+        .filter((line) => line.includes("|"))
+        .map((line) => line.split("|")[0])
+        .filter((label) => label.length)
+        .filter((label) => label !== "#Header");
 }

@@ -157,7 +157,7 @@ class CondorJobRunner(AsynchronousJobRunner):
         log.info("(%s) queued as %s" % (galaxy_id_tag, external_job_id))
 
         # store runner information for tracking if Galaxy restarts
-        job_wrapper.set_job_destination(job_destination, external_job_id)
+        job_wrapper.set_external_id(external_job_id)
 
         # Store DRM related state information for job
         cjs.job_id = external_job_id
@@ -176,7 +176,7 @@ class CondorJobRunner(AsynchronousJobRunner):
             job_id = cjs.job_id
             galaxy_id_tag = cjs.job_wrapper.get_id_tag()
             try:
-                if os.stat(cjs.user_log).st_size == cjs.user_log_size:
+                if cjs.job_wrapper.tool.tool_type != 'interactive' and os.stat(cjs.user_log).st_size == cjs.user_log_size:
                     new_watched.append(cjs)
                     continue
                 s1, s4, s7, s5, s9, log_size = summarize_condor_log(cjs.user_log, job_id)

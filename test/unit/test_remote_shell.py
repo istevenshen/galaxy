@@ -6,9 +6,8 @@ try:
 except ImportError:
     raise unittest.SkipTest("Skipping tests that require mockssh")
 
-from base.ssh_util import generate_ssh_keys
-
 from galaxy.jobs.runners.cli import CliInterface
+from galaxy_test.base.ssh_util import generate_ssh_keys
 
 
 class TestCliInterface(unittest.TestCase):
@@ -24,6 +23,7 @@ class TestCliInterface(unittest.TestCase):
         cls.username = 'testuser'
         cls.shell_params = {'username': cls.username,
                             'private_key': cls.ssh_keys.private_key_file,
+                            'strict_host_key_checking': False,
                             'hostname': 'localhost'}
         cls.cli_interface = CliInterface()
 

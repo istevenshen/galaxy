@@ -15,7 +15,7 @@
                         class="mb-3"
                         id="data-manager-card"
                     >
-                        <template slot="header">
+                        <template v-slot:header>
                             <b-container>
                                 <b-row align-v="center">
                                     <b-col cols="auto">
@@ -30,9 +30,9 @@
                             </b-container>
                         </template>
                         <b-card v-for="(hda, i) in hdaInfo" :key="i" class="mb-4" :id="'data-card-' + i">
-                            <template slot="header">
+                            <template v-slot:header>
                                 <b-table :fields="fields" :items="[hda]" caption-top small stacked>
-                                    <template slot="table-caption">
+                                    <template v-slot:table-caption>
                                         <b-container>
                                             <b-row align-v="center">
                                                 <b-col cols="auto">
@@ -63,7 +63,7 @@
                                 hover
                                 striped
                             >
-                                <template slot="table-caption">
+                                <template v-slot:table-caption>
                                     Data Table: <b>{{ output[0] }}</b>
                                 </template>
                             </b-table>
@@ -82,13 +82,13 @@ import Alert from "components/Alert.vue";
 
 export default {
     components: {
-        Alert
+        Alert,
     },
     props: {
         id: {
             type: String,
-            required: true
-        }
+            required: true,
+        },
     },
     data() {
         return {
@@ -105,13 +105,13 @@ export default {
                 {
                     key: "fileName",
                     label: "Full path",
-                    tdClass: "table-cell-break-word"
-                }
+                    tdClass: "table-cell-break-word",
+                },
             ],
             viewOnly: false,
             message: "",
             status: "",
-            loading: true
+            loading: true,
         };
     },
     computed: {
@@ -119,36 +119,36 @@ export default {
             return [
                 {
                     text: "Data Managers",
-                    to: "/"
+                    to: "/",
                 },
                 {
                     text: this.dataManager["name"] + " ( " + this.dataManager["description"] + " )",
                     href: this.dataManager["toolUrl"],
-                    target: "_blank"
+                    target: "_blank",
                 },
                 {
                     text: "Jobs",
                     to: {
                         name: "DataManagerJobs",
-                        params: { id: this.dataManager["id"] }
-                    }
+                        params: { id: this.dataManager["id"] },
+                    },
                 },
                 {
                     text: "Job " + this.jobId,
-                    active: true
-                }
+                    active: true,
+                },
             ];
-        }
+        },
     },
     methods: {
         outputFields(output) {
             return Object.keys(output).reduce((acc, c) => [...acc, { key: c, label: c }], []);
-        }
+        },
     },
     created() {
         axios
             .get(`${getAppRoot()}data_manager/job_info?id=${this.id}`)
-            .then(response => {
+            .then((response) => {
                 this.jobId = response.data.jobId;
                 this.exitCode = response.data.exitCode;
                 this.runUrl = response.data.runUrl;
@@ -161,10 +161,10 @@ export default {
                 this.status = response.data.status;
                 this.loading = false;
             })
-            .catch(error => {
+            .catch((error) => {
                 console.error(error);
             });
-    }
+    },
 };
 </script>
 

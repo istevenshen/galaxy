@@ -1,17 +1,19 @@
-import logging
 import os
 from functools import partial
-from xml.etree import ElementTree
 
 import galaxy.workflow.schedulers
 from galaxy import model
 from galaxy.exceptions import HandlerAssignmentError
-from galaxy.util import plugin_config
+from galaxy.util import (
+    parse_xml,
+    plugin_config,
+)
+from galaxy.util.custom_logging import get_logger
 from galaxy.util.monitors import Monitors
 from galaxy.web_stack.handlers import ConfiguresHandlers, HANDLER_ASSIGNMENT_METHODS
 from galaxy.web_stack.message import WorkflowSchedulingMessage
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 DEFAULT_SCHEDULER_ID = "default"  # well actually this should be called DEFAULT_DEFAULT_SCHEDULER_ID...
 DEFAULT_SCHEDULER_PLUGIN_TYPE = "core"
@@ -186,7 +188,7 @@ class WorkflowSchedulingManager(ConfiguresHandlers):
         if use_default_scheduler:
             self.__init_default_scheduler()
         else:
-            plugins_element = ElementTree.parse(config_file).getroot()
+            plugins_element = parse_xml(config_file).getroot()
             self.__init_schedulers_for_element(plugins_element)
 
         if not self.__handlers_configured and self.__stack_has_pool:
@@ -269,12 +271,17 @@ class WorkflowRequestMonitor(Monitors):
     def __monitor(self):
         to_monitor = self.workflow_scheduling_manager.active_workflow_schedulers
         while self.monitor_running:
+            monitor_step_timer = self.app.execution_timer_factory.get_timer(
+                'internal.galaxy.workflows.scheduling_manager.monitor_step',
+                'Workflow scheduling manager monitor step complete.'
+            )
             for workflow_scheduler_id, workflow_scheduler in to_monitor.items():
                 if not self.monitor_running:
                     return
 
                 self.__schedule(workflow_scheduler_id, workflow_scheduler)
 
+            log.trace(monitor_step_timer.to_str())
             self._monitor_sleep(1)
 
     def __schedule(self, workflow_scheduler_id, workflow_scheduler):

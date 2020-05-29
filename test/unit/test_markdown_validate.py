@@ -1,4 +1,4 @@
-from galaxy.managers.markdown_util import validate_galaxy_markdown
+from galaxy.managers.markdown_parse import validate_galaxy_markdown
 
 
 def assert_markdown_valid(markdown):
@@ -9,7 +9,7 @@ def assert_markdown_invalid(markdown, at_line=None):
     failed = False
     try:
         validate_galaxy_markdown(markdown)
-    except Exception as e:
+    except ValueError as e:
         failed = True
         if at_line is not None:
             assert "Invalid line %d" % (at_line + 1) in str(e)
@@ -36,6 +36,20 @@ printf('hello')
 job_metrics(job_id=THISFAKEID)
 ```
 """)
+    # assert multiple valid container is fine.
+    assert_markdown_valid("""
+```galaxy
+job_metrics(job_id=THISFAKEID)
+```
+
+Markdown between directives.
+
+```galaxy
+job_metrics(job_id=THISFAKEID)
+```
+
+""")
+
     # assert valid container is fine at end of document.
     assert_markdown_valid("""
 ```galaxy
@@ -67,5 +81,43 @@ job_metrics(job_id=THISFAKEID
     assert_markdown_invalid("""
 ```galaxy
 job_metrics(THISFAKEID)
+```
+""")
+    # assert quotes are fine
+    assert_markdown_valid("""
+```galaxy
+job_metrics(output="Moo Cow")
+```
+""")
+    assert_markdown_valid("""
+```galaxy
+job_metrics(output='Moo Cow')
+```
+""")
+    # assert spaces require quotes
+    assert_markdown_invalid("""
+```galaxy
+job_metrics(output=Moo Cow)
+```
+""")
+    # assert unmatched quotes invalid
+    assert_markdown_invalid("""
+```galaxy
+job_metrics(output="Moo Cow)
+```
+""")
+    assert_markdown_invalid("""
+```galaxy
+job_metrics(output=Moo Cow")
+```
+""")
+    assert_markdown_invalid("""
+```galaxy
+job_metrics(output='Moo Cow)
+```
+""")
+    assert_markdown_invalid("""
+```galaxy
+job_metrics(output=Moo Cow')
 ```
 """)

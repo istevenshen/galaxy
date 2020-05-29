@@ -3,7 +3,6 @@ import logging
 import os
 import shlex
 import socket
-import subprocess
 import tempfile
 from collections import OrderedDict
 from json import dump, dumps
@@ -14,11 +13,23 @@ from sqlalchemy.orm import eagerload_all
 from webob.compat import cgi_FieldStorage
 
 from galaxy import datatypes, util
-from galaxy.exceptions import ConfigDoesNotAllowException, ObjectInvalid
+from galaxy.exceptions import (
+    ConfigDoesNotAllowException,
+    ObjectInvalid,
+    RequestParameterInvalidException,
+)
 from galaxy.model import tags
-from galaxy.util import unicodify
+from galaxy.util import (
+    commands,
+    unicodify
+)
 
 log = logging.getLogger(__name__)
+
+
+def validate_datatype_extension(datatypes_registry, ext):
+    if ext and ext not in ('auto', 'data') and not datatypes_registry.get_datatype_by_extension(ext):
+        raise RequestParameterInvalidException("Requested extension '%s' unknown, cannot upload dataset." % ext)
 
 
 def validate_url(url, ip_whitelist):
@@ -73,7 +84,7 @@ def validate_url(url, ip_whitelist):
     #   AF_* family: It will resolve to AF_INET or AF_INET6, getaddrinfo(3) doesn't even mention AF_UNIX,
     #   socktype: We don't care if a stream/dgram/raw protocol
     #   protocol: we don't care if it is tcp or udp.
-    addrinfo_results = set([info[4][0] for info in addrinfo])
+    addrinfo_results = {info[4][0] for info in addrinfo}
     # There may be multiple (e.g. IPv4 + IPv6 or DNS round robin). Any one of these
     # could resolve to a local addresses (and could be returned by chance),
     # therefore we must check them all.
@@ -282,8 +293,9 @@ def new_upload(trans, cntrller, uploaded_dataset, library_bunch=None, history=No
     if library_bunch:
         upload_target_dataset_instance = __new_library_upload(trans, cntrller, uploaded_dataset, library_bunch, state)
         if library_bunch.tags and not uploaded_dataset.tags:
-            for tag in library_bunch.tags:
-                trans.app.tag_handler.apply_item_tag(user=trans.user, item=upload_target_dataset_instance, name='name', value=tag)
+            new_tags = trans.app.tag_handler.parse_tags_list(library_bunch.tags)
+            for tag in new_tags:
+                trans.app.tag_handler.apply_item_tag(user=trans.user, item=upload_target_dataset_instance, name=tag[0], value=tag[1])
     else:
         upload_target_dataset_instance = __new_history_upload(trans, uploaded_dataset, history=history, state=state)
 
@@ -313,12 +325,15 @@ def create_paramfile(trans, uploaded_datasets):
             pwent = trans.user.system_user_pwent(trans.app.config.real_system_username)
             cmd = shlex.split(trans.app.config.external_chown_script)
             cmd.extend([path, pwent[0], str(pwent[3])])
-            log.debug('Changing ownership of %s with: %s' % (path, ' '.join(cmd)))
-            p = subprocess.Popen(cmd, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            stdout, stderr = p.communicate()
-            assert p.returncode == 0, stderr
         except Exception as e:
-            log.warning('Changing ownership of uploaded file %s failed: %s', path, unicodify(e))
+            log.debug('Failed to construct command to change ownership %s' %
+                      unicodify(e))
+        log.debug('Changing ownership of %s with: %s' % (path, ' '.join(cmd)))
+        try:
+            commands.execute(cmd)
+        except commands.CommandLineException as e:
+            log.warning('Changing ownership of uploaded file %s failed: %s',
+                        path, unicodify(e))
 
     tool_params = []
     json_file_path = None

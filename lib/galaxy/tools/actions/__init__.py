@@ -59,6 +59,7 @@ class ToolAction(object):
 
 class DefaultToolAction(object):
     """Default tool action is to run an external command"""
+    produces_real_jobs = True
 
     def _collect_input_datasets(self, tool, param_values, trans, history, current_user_roles=None, dataset_collection_elements=None, collection_info=None):
         """
@@ -334,6 +335,7 @@ class DefaultToolAction(object):
 
         # Add the dbkey to the incoming parameters
         incoming["dbkey"] = input_dbkey
+        incoming["__input_ext"] = input_ext
         # wrapped params are used by change_format action and by output.label; only perform this wrapping once, as needed
         wrapped_params = self._wrapped_params(trans, tool, incoming, inp_data)
 
@@ -358,16 +360,14 @@ class DefaultToolAction(object):
         parent_to_child_pairs = []
         child_dataset_names = set()
         object_store_populator = ObjectStorePopulator(app)
+        async_tool = tool.tool_type == 'data_source_async'
 
         def handle_output(name, output, hidden=None):
             if output.parent:
                 parent_to_child_pairs.append((output.parent, name))
                 child_dataset_names.add(name)
-            # What is the following hack for? Need to document under what
-            # conditions can the following occur? (james@bx.psu.edu)
-            # HACK: the output data has already been created
-            #      this happens i.e. as a result of the async controller
-            if name in incoming:
+            if async_tool and name in incoming:
+                # HACK: output data has already been created as a result of the async controller
                 dataid = incoming[name]
                 data = trans.sa_session.query(app.model.HistoryDatasetAssociation).get(dataid)
                 assert data is not None
@@ -515,7 +515,10 @@ class DefaultToolAction(object):
                     handle_output(name, output)
                     log.info("Handled output named %s for tool %s %s" % (name, tool.id, handle_output_timer))
 
-        add_datasets_timer = ExecutionTimer()
+        add_datasets_timer = tool.app.execution_timer_factory.get_timer(
+            'internals.galaxy.tools.actions.add_datasets',
+            'Added output datasets to history',
+        )
         # Add all the top-level (non-child) datasets to the history unless otherwise specified
         datasets_to_persist = []
         for name, data in out_data.items():
@@ -531,7 +534,7 @@ class DefaultToolAction(object):
             child_dataset = out_data[child_name]
             parent_dataset.children.append(child_dataset)
 
-        log.info("Added output datasets to history %s" % add_datasets_timer)
+        log.info(add_datasets_timer)
         job_setup_timer = ExecutionTimer()
         # Create the job object
         job, galaxy_session = self._new_job_for_session(trans, tool, history)
@@ -761,7 +764,7 @@ class DefaultToolAction(object):
 
         <data format="tabular" name="output" label="Tabular output, aggregates data from individual_inputs" >
             <actions>
-                <action name="column_names" type="metadata" default="${','.join([input.name for input in $individual_inputs ])}" />
+                <action name="column_names" type="metadata" default="${','.join(input.name for input in $individual_inputs)}" />
             </actions>
         </data>
         """

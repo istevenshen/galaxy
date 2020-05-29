@@ -9,16 +9,38 @@ import createCache from "vuex-cache";
 import { gridSearchStore } from "./gridSearchStore";
 import { tagStore } from "./tagStore";
 import { jobMetricsStore } from "./jobMetricsStore";
+import { jobDestinationParametersStore } from "./jobDestinationParametersStore";
 import { invocationStore } from "./invocationStore";
+import { historyStore } from "./historyStore";
+import { userStore } from "./userStore";
+import { configStore } from "./configStore";
+import { workflowStore } from "./workflowStore";
 
 Vue.use(Vuex);
 
-export default new Vuex.Store({
-    plugins: [createCache()],
-    modules: {
-        gridSearch: gridSearchStore,
-        tags: tagStore,
-        jobMetrics: jobMetricsStore,
-        invocations: invocationStore
-    }
-});
+export function createStore() {
+    return new Vuex.Store({
+        plugins: [
+            createCache(),
+            (store) => {
+                store.dispatch("user/$init", { store });
+                store.dispatch("config/$init", { store });
+            },
+        ],
+        modules: {
+            gridSearch: gridSearchStore,
+            histories: historyStore,
+            tags: tagStore,
+            jobMetrics: jobMetricsStore,
+            destinationParameters: jobDestinationParametersStore,
+            invocations: invocationStore,
+            user: userStore,
+            config: configStore,
+            workflows: workflowStore,
+        },
+    });
+}
+
+const store = createStore();
+
+export default store;

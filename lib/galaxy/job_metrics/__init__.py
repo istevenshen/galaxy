@@ -47,7 +47,13 @@ class JobMetrics(object):
         self.set_destination_instrumenter(destination_id, instrumenter)
 
     def set_destination_conf_element(self, destination_id, element):
-        instrumenter = JobInstrumenter(self.plugin_classes, ('xml', element))
+        plugin_source = plugin_config.PluginConfigSource('xml', element)
+        instrumenter = JobInstrumenter(self.plugin_classes, plugin_source)
+        self.set_destination_instrumenter(destination_id, instrumenter)
+
+    def set_destination_conf_dicts(self, destination_id, conf_dicts):
+        plugin_source = plugin_config.PluginConfigSource('dict', conf_dicts)
+        instrumenter = JobInstrumenter(self.plugin_classes, plugin_source)
         self.set_destination_instrumenter(destination_id, instrumenter)
 
     def set_destination_instrumenter(self, destination_id, job_instrumenter=None):
@@ -94,7 +100,7 @@ class JobInstrumenter(object):
                     commands.extend(util.listify(plugin_commands))
             except Exception:
                 log.exception("Failed to generate pre-execute commands for plugin %s", plugin)
-        return "\n".join([c for c in commands if c])
+        return "\n".join(c for c in commands if c)
 
     def post_execute_commands(self, job_directory):
         commands = []
@@ -105,7 +111,7 @@ class JobInstrumenter(object):
                     commands.extend(util.listify(plugin_commands))
             except Exception:
                 log.exception("Failed to generate post-execute commands for plugin %s", plugin)
-        return "\n".join([c for c in commands if c])
+        return "\n".join(c for c in commands if c)
 
     def collect_properties(self, job_id, job_directory):
         per_plugin_properties = {}

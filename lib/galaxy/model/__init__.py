@@ -40,6 +40,7 @@ from sqlalchemy.orm import (
     aliased,
     joinedload,
     object_session,
+    Query,
 )
 from sqlalchemy.schema import UniqueConstraint
 
@@ -228,6 +229,7 @@ class WorkerProcess(UsesCreateAndUpdateTime):
     def __init__(self, server_name, hostname):
         self.server_name = server_name
         self.hostname = hostname
+        self.pid = None
 
 
 def cached_id(galaxy_model_object):
@@ -508,58 +510,45 @@ class User(Dictifiable, RepresentById):
         HDAs in non-purged histories.
         """
         # maintain a list so that we don't double count
-        db_session = object_session(self)
-        return self._calculate_or_set_disk_usage(db_session, dryrun=True)
+        return self._calculate_or_set_disk_usage(dryrun=True)
 
     def calculate_and_set_disk_usage(self):
         """
         Calculates and sets user disk usage.
         """
-        db_session = object_session(self)
-        self._calculate_or_set_disk_usage(db_session, dryrun=False)
+        self._calculate_or_set_disk_usage(dryrun=False)
 
-    def _calculate_or_set_disk_usage(self, sa_session, dryrun=True):
+    def _calculate_or_set_disk_usage(self, dryrun=True):
         """
-        Utility to calculate (returning a value) or just set the disk usage
-        (returning None / applying immediately)
+        Utility to calculate and return the disk usage.  If dryrun is False,
+        the new value is set immediately.
         """
-
-        ctes = """
+        sql_calc = """
             WITH per_user_histories AS
             (
-                SELECT history.id as id
+                SELECT id
                 FROM history
-                WHERE history.user_id = :id
-                    AND history.purged = '0'
+                WHERE user_id = :id
+                    AND NOT purged
             ),
             per_hist_hdas AS (
-                SELECT DISTINCT history_dataset_association.dataset_id as id
+                SELECT DISTINCT dataset_id
                 FROM history_dataset_association
-                WHERE history_dataset_association.purged = '0'
-                    AND history_dataset_association.history_id in (SELECT id from per_user_histories)
+                WHERE NOT purged
+                    AND history_id IN (SELECT id FROM per_user_histories)
             )
-        """
-
-        sql_calc = """
-            SELECT sum(coalesce(dataset.total_size, coalesce(dataset.file_size, 0)))
+            SELECT SUM(COALESCE(dataset.total_size, dataset.file_size, 0))
             FROM dataset
             LEFT OUTER JOIN library_dataset_dataset_association ON dataset.id = library_dataset_dataset_association.dataset_id
-            WHERE dataset.id in (SELECT id from per_hist_hdas)
+            WHERE dataset.id IN (SELECT dataset_id FROM per_hist_hdas)
                 AND library_dataset_dataset_association.id IS NULL
         """
-
-        sql_update = """UPDATE galaxy_user
-                        SET disk_usage = (%s)
-                        WHERE id = :id""" % sql_calc
-        if dryrun:
-            r = sa_session.execute(ctes + sql_calc, {'id': self.id})
-            return r.fetchone()[0]
-        else:
-            r = sa_session.execute(ctes + sql_update, {'id': self.id})
-            sa_session.refresh(self)
-            # There is no RETURNING clause because sqlite does not support it, so
-            # we return None
-            return None
+        sa_session = object_session(self)
+        usage = sa_session.scalar(sql_calc, {'id': self.id})
+        if not dryrun:
+            self.set_disk_usage(usage)
+            sa_session.flush()
+        return usage
 
     @staticmethod
     def user_template_environment(user):
@@ -629,11 +618,13 @@ class DynamicTool(Dictifiable):
     dict_collection_visible_keys = ('id', 'tool_id', 'tool_format', 'tool_version', 'uuid', 'active', 'hidden')
     dict_element_visible_keys = ('id', 'tool_id', 'tool_format', 'tool_version', 'uuid', 'active', 'hidden')
 
-    def __init__(self, tool_format=None, tool_id=None, tool_version=None,
+    def __init__(self, tool_format=None, tool_id=None, tool_version=None, tool_path=None, tool_directory=None,
                  uuid=None, active=True, hidden=True, value=None):
         self.tool_format = tool_format
         self.tool_id = tool_id
         self.tool_version = tool_version
+        self.tool_path = tool_path
+        self.tool_directory = tool_directory
         self.active = active
         self.hidden = hidden
         self.value = value
@@ -669,7 +660,7 @@ class TaskMetricNumeric(BaseJobMetric, RepresentById):
 
 class Job(JobLike, UsesCreateAndUpdateTime, Dictifiable, RepresentById):
     dict_collection_visible_keys = ['id', 'state', 'exit_code', 'update_time', 'create_time', 'galaxy_version']
-    dict_element_visible_keys = ['id', 'state', 'exit_code', 'update_time', 'create_time', 'galaxy_version']
+    dict_element_visible_keys = ['id', 'state', 'exit_code', 'update_time', 'create_time', 'galaxy_version', 'command_version']
 
     """
     A job represents a request to run a tool given input datasets, tool
@@ -737,6 +728,10 @@ class Job(JobLike, UsesCreateAndUpdateTime, Dictifiable, RepresentById):
         self.state_history.append(JobStateHistory(self))
 
     @property
+    def running(self):
+        return self.state == Job.states.RUNNING
+
+    @property
     def finished(self):
         states = self.states
         return self.state in [
@@ -746,13 +741,20 @@ class Job(JobLike, UsesCreateAndUpdateTime, Dictifiable, RepresentById):
             states.DELETED_NEW,
         ]
 
-    def io_dicts(self):
+    def io_dicts(self, exclude_implicit_outputs=False):
         inp_data = dict([(da.name, da.dataset) for da in self.input_datasets])
         out_data = dict([(da.name, da.dataset) for da in self.output_datasets])
         inp_data.update([(da.name, da.dataset) for da in self.input_library_datasets])
         out_data.update([(da.name, da.dataset) for da in self.output_library_datasets])
 
-        out_collections = dict([(obj.name, obj.dataset_collection_instance) for obj in self.output_dataset_collection_instances])
+        if not exclude_implicit_outputs:
+            out_collections = dict([(obj.name, obj.dataset_collection_instance) for obj in self.output_dataset_collection_instances])
+        else:
+            out_collections = {}
+            for obj in self.output_dataset_collection_instances:
+                if obj.name not in out_data:
+                    out_collections[obj.name] = obj.dataset_collection_instance
+                # else this is a mapped over output
         out_collections.update([(obj.name, obj.dataset_collection) for obj in self.output_dataset_collections])
         return inp_data, out_data, out_collections
 
@@ -1142,6 +1144,12 @@ class Job(JobLike, UsesCreateAndUpdateTime, Dictifiable, RepresentById):
             config_value = default
         return config_value
 
+    @property
+    def command_version(self):
+        # TODO: make actual database property and track properly - we should be recording this on the job and not on the datasets
+        for dataset_assoc in self.output_datasets:
+            return dataset_assoc.dataset.tool_version
+
 
 class Task(JobLike, RepresentById):
     """
@@ -1400,7 +1408,7 @@ class ImplicitCollectionJobsJobAssociation(RepresentById):
 
 
 class PostJobAction(RepresentById):
-    def __init__(self, action_type, workflow_step, output_name=None, action_arguments=None):
+    def __init__(self, action_type, workflow_step=None, output_name=None, action_arguments=None):
         self.action_type = action_type
         self.output_name = output_name
         self.action_arguments = action_arguments
@@ -1491,8 +1499,8 @@ class JobContainerAssociation(RepresentById):
 
 
 class InteractiveToolEntryPoint(Dictifiable, RepresentById):
-    dict_collection_visible_keys = ['id', 'name', 'active']
-    dict_element_visible_keys = ['id', 'name', 'active']
+    dict_collection_visible_keys = ['id', 'name', 'active', 'created_time', 'modified_time']
+    dict_element_visible_keys = ['id', 'name', 'active', 'created_time', 'modified_time']
 
     def __init__(self, job=None, name=None, token=None, tool_port=None, host=None, port=None, protocol=None,
                  entry_url=None, info=None, configured=False, deleted=False):
@@ -1885,34 +1893,27 @@ class History(HasTags, Dictifiable, UsesAnnotations, HasName, RepresentById):
         return galaxy.util.nice_size(self.disk_size)
 
     @property
+    def active_dataset_and_roles_query(self):
+        db_session = object_session(self)
+        return (db_session.query(HistoryDatasetAssociation)
+            .filter(HistoryDatasetAssociation.table.c.history_id == self.id)
+            .filter(not_(HistoryDatasetAssociation.deleted))
+            .order_by(HistoryDatasetAssociation.table.c.hid.asc())
+            .options(joinedload("dataset"),
+                     joinedload("dataset.actions"),
+                     joinedload("dataset.actions.role"),
+                     joinedload("tags")))
+
+    @property
     def active_datasets_and_roles(self):
         if not hasattr(self, '_active_datasets_and_roles'):
-            db_session = object_session(self)
-            query = (db_session.query(HistoryDatasetAssociation)
-                .filter(HistoryDatasetAssociation.table.c.history_id == self.id)
-                .filter(not_(HistoryDatasetAssociation.deleted))
-                .order_by(HistoryDatasetAssociation.table.c.hid.asc())
-                .options(joinedload("dataset"),
-                         joinedload("dataset.actions"),
-                         joinedload("dataset.actions.role"),
-                         joinedload("tags")))
-            self._active_datasets_and_roles = query.all()
+            self._active_datasets_and_roles = self.active_dataset_and_roles_query.all()
         return self._active_datasets_and_roles
 
     @property
     def active_visible_datasets_and_roles(self):
         if not hasattr(self, '_active_visible_datasets_and_roles'):
-            db_session = object_session(self)
-            query = (db_session.query(HistoryDatasetAssociation)
-                .filter(HistoryDatasetAssociation.table.c.history_id == self.id)
-                .filter(not_(HistoryDatasetAssociation.deleted))
-                .filter(HistoryDatasetAssociation.visible)
-                .order_by(HistoryDatasetAssociation.table.c.hid.asc())
-                .options(joinedload("dataset"),
-                         joinedload("dataset.actions"),
-                         joinedload("dataset.actions.role"),
-                         joinedload("tags")))
-            self._active_visible_datasets_and_roles = query.all()
+            self._active_visible_datasets_and_roles = self.active_dataset_and_roles_query.filter(HistoryDatasetAssociation.visible).all()
         return self._active_visible_datasets_and_roles
 
     @property
@@ -2174,7 +2175,7 @@ class Dataset(StorableObject, RepresentById):
     )
     ready_states = tuple(set(states.__dict__.values()) - set(non_ready_states))
     valid_input_states = tuple(
-        set(states.__dict__.values()) - set([states.ERROR, states.DISCARDED])
+        set(states.__dict__.values()) - {states.ERROR, states.DISCARDED}
     )
     terminal_states = (
         states.OK,
@@ -2259,9 +2260,24 @@ class Dataset(StorableObject, RepresentById):
         return self.object_store.exists(self, extra_dir=self._extra_files_rel_path, dir_only=True)
 
     @property
+    def store_by(self):
+        store_by = self.object_store.get_store_by(self)
+        return store_by
+
+    def extra_files_path_name_from(self, object_store):
+        store_by = self.store_by
+        if store_by is not None:
+            return "dataset_%s_files" % getattr(self, store_by)
+        else:
+            return None
+
+    @property
+    def extra_files_path_name(self):
+        return self.extra_files_path_name_from(self.object_store)
+
+    @property
     def _extra_files_rel_path(self):
-        store_by = getattr(self.object_store, "store_by", "id")
-        return self._extra_files_path or "dataset_%s_files" % getattr(self, store_by)
+        return self._extra_files_path or self.extra_files_path_name
 
     def _calculate_size(self):
         if self.external_filename:
@@ -2310,9 +2326,11 @@ class Dataset(StorableObject, RepresentById):
         if self.file_size is None:
             self.set_size()
         self.total_size = self.file_size or 0
-        if self.object_store.exists(self, extra_dir=self._extra_files_rel_path, dir_only=True):
-            for root, dirs, files in os.walk(self.extra_files_path):
-                self.total_size += sum([os.path.getsize(os.path.join(root, file)) for file in files if os.path.exists(os.path.join(root, file))])
+        rel_path = self._extra_files_rel_path
+        if rel_path is not None:
+            if self.object_store.exists(self, extra_dir=rel_path, dir_only=True):
+                for root, dirs, files in os.walk(self.extra_files_path):
+                    self.total_size += sum([os.path.getsize(os.path.join(root, file)) for file in files if os.path.exists(os.path.join(root, file))])
 
     def has_data(self):
         """Detects whether there is any data"""
@@ -2339,8 +2357,10 @@ class Dataset(StorableObject, RepresentById):
             self.object_store.delete(self)
         except galaxy.exceptions.ObjectNotFound:
             pass
-        if self.object_store.exists(self, extra_dir=self._extra_files_rel_path, dir_only=True):
-            self.object_store.delete(self, entire_dir=True, extra_dir=self._extra_files_rel_path, dir_only=True)
+        rel_path = self._extra_files_rel_path
+        if rel_path is not None:
+            if self.object_store.exists(self, extra_dir=rel_path, dir_only=True):
+                self.object_store.delete(self, entire_dir=True, extra_dir=rel_path, dir_only=True)
         # TODO: purge metadata files
         self.deleted = True
         self.purged = True
@@ -2382,6 +2402,7 @@ class Dataset(StorableObject, RepresentById):
             file_size=to_int(self.file_size),
             object_store_id=self.object_store_id,
             total_size=to_int(self.total_size),
+            created_from_basename=self.created_from_basename,
             uuid=str(self.uuid or '') or None,
             hashes=list(map(lambda h: h.serialize(id_encoder, serialization_options), self.hashes))
         )
@@ -3142,6 +3163,7 @@ class HistoryDatasetAssociation(DatasetInstance, HasTags, Dictifiable, UsesAnnot
             return rval
 
         rval = super(HistoryDatasetAssociation, self).serialize(id_encoder, serialization_options)
+        rval['state'] = self.state
         rval["hid"] = self.hid
         rval["annotation"] = unicodify(getattr(self, 'annotation', ''))
         rval["tags"] = self.make_tag_string_list()
@@ -3237,7 +3259,7 @@ class HistoryDatasetAssociation(DatasetInstance, HasTags, Dictifiable, UsesAnnot
 
     @hybrid.hybrid_property
     def type_id(self):
-        return u'-'.join([self.content_type, str(self.id)])
+        return u'-'.join((self.content_type, str(self.id)))
 
     @type_id.expression
     def type_id(cls):
@@ -3510,7 +3532,7 @@ class LibraryDataset(RepresentById):
             if isinstance(val, MetadataFile):
                 val = val.file_name
             elif isinstance(val, list):
-                val = ', '.join([str(v) for v in val])
+                val = ', '.join(str(v) for v in val)
             rval['metadata_' + name] = val
         return rval
 
@@ -3533,7 +3555,7 @@ class LibraryDatasetDatasetAssociation(DatasetInstance, HasName, RepresentById):
         self.library_dataset = library_dataset
         self.user = user
 
-    def to_history_dataset_association(self, target_history, parent_id=None, add_to_history=False):
+    def to_history_dataset_association(self, target_history, parent_id=None, add_to_history=False, visible=None):
         sa_session = object_session(self)
         hda = HistoryDatasetAssociation(name=self.name,
                                         info=self.info,
@@ -3543,7 +3565,7 @@ class LibraryDatasetDatasetAssociation(DatasetInstance, HasName, RepresentById):
                                         extension=self.extension,
                                         dbkey=self.dbkey,
                                         dataset=self.dataset,
-                                        visible=self.visible,
+                                        visible=visible if visible is not None else self.visible,
                                         deleted=self.deleted,
                                         parent_id=parent_id,
                                         copied_from_library_dataset_dataset_association=self,
@@ -3881,7 +3903,7 @@ class DatasetCollection(Dictifiable, UsesAnnotations, RepresentById):
     def populated(self):
         top_level_populated = self.populated_state == DatasetCollection.populated_states.OK
         if top_level_populated and self.has_subcollections:
-            return all(e.child_collection.populated for e in self.elements)
+            return all(e.child_collection and e.child_collection.populated for e in self.elements)
         return top_level_populated
 
     @property
@@ -4144,7 +4166,7 @@ class HistoryDatasetCollectionAssociation(DatasetCollectionInstance,
 
     @hybrid.hybrid_property
     def type_id(self):
-        return u'-'.join([self.content_type, str(self.id)])
+        return u'-'.join((self.content_type, str(self.id)))
 
     @type_id.expression
     def type_id(cls):
@@ -4266,6 +4288,35 @@ class HistoryDatasetCollectionAssociation(DatasetCollectionInstance,
         object_session(self).add(hdca)
         object_session(self).flush()
         return hdca
+
+    def contains_collection(self, collection_id):
+        """Checks to see that the indicated collection is a member of the
+        hdca by using a recursive CTE sql query to find the collection's parents
+        and checking to see if any of the parents are associated with this hdca"""
+
+        sa_session = object_session(self)
+        DCE = DatasetCollectionElement
+        HDCA = HistoryDatasetCollectionAssociation
+
+        # non-recursive part of the cte (starting point)
+        parents_cte = Query(DCE.dataset_collection_id) \
+            .filter(or_(DCE.child_collection_id == collection_id, DCE.dataset_collection_id == collection_id)) \
+            .cte(name="element_parents", recursive="True")
+        ep = aliased(parents_cte, name="ep")
+
+        # add the recursive part of the cte expression
+        dce = aliased(DCE, name="dce")
+        rec = Query(dce.dataset_collection_id.label('dataset_collection_id')) \
+            .filter(dce.child_collection_id == ep.c.dataset_collection_id)
+        parents_cte = parents_cte.union(rec)
+
+        # join parents to hdca, look for matching hdca_id
+        hdca = aliased(HDCA, name="hdca")
+        jointohdca = parents_cte.join(hdca, hdca.collection_id == parents_cte.c.dataset_collection_id)
+        qry = Query(hdca.id).select_entity_from(jointohdca).filter(hdca.id == self.id)
+
+        results = qry.with_session(sa_session).all()
+        return len(results) > 0
 
 
 class LibraryDatasetCollectionAssociation(DatasetCollectionInstance, RepresentById):
@@ -4484,8 +4535,8 @@ class UCI(object):
 
 class StoredWorkflow(HasTags, Dictifiable, RepresentById):
 
-    dict_collection_visible_keys = ['id', 'name', 'create_time', 'published', 'deleted']
-    dict_element_visible_keys = ['id', 'name', 'create_time', 'published', 'deleted']
+    dict_collection_visible_keys = ['id', 'name', 'create_time', 'update_time', 'published', 'deleted']
+    dict_element_visible_keys = ['id', 'name', 'create_time', 'update_time', 'published', 'deleted']
 
     def __init__(self):
         self.id = None
@@ -4493,6 +4544,7 @@ class StoredWorkflow(HasTags, Dictifiable, RepresentById):
         self.name = None
         self.slug = None
         self.create_time = None
+        self.update_time = None
         self.published = False
         self.latest_workflow_id = None
         self.workflows = []
@@ -4667,6 +4719,15 @@ class WorkflowStep(RepresentById):
     @property
     def tool_uuid(self):
         return self.dynamic_tool and self.dynamic_tool.uuid
+
+    @property
+    def input_default_value(self):
+        tool_inputs = self.tool_inputs
+        tool_state = tool_inputs
+        default_value = tool_state.get("default")
+        if default_value:
+            default_value = json.loads(default_value)["value"]
+        return default_value
 
     def get_input(self, input_name):
         for step_input in self.inputs:
@@ -5024,10 +5085,17 @@ class WorkflowInvocation(UsesCreateAndUpdateTime, Dictifiable, RepresentById):
         return [wid for wid in query.all()]
 
     def add_output(self, workflow_output, step, output_object):
-        if step.type == 'parameter_input':
-            # TODO: these should be properly tracked.
-            return
-        if output_object.history_content_type == "dataset":
+        if not hasattr(output_object, "history_content_type"):
+            # assuming this is a simple type, just JSON-ify it and stick in the database. In the future
+            # I'd like parameter_inputs to have datasets and collections as valid parameter types so
+            # dispatch on actual object and not step type.
+            output_assoc = WorkflowInvocationOutputValue()
+            output_assoc.workflow_invocation = self
+            output_assoc.workflow_output = workflow_output
+            output_assoc.workflow_step = step
+            output_assoc.value = output_object
+            self.output_values.append(output_assoc)
+        elif output_object.history_content_type == "dataset":
             output_assoc = WorkflowInvocationOutputDatasetAssociation()
             output_assoc.workflow_invocation = self
             output_assoc.workflow_output = workflow_output
@@ -5118,6 +5186,8 @@ class WorkflowInvocation(UsesCreateAndUpdateTime, Dictifiable, RepresentById):
                             if output_step_type in ['data_input', 'data_collection_input']:
                                 src = "hda" if output_step_type == 'data_input' else 'hdca'
                                 for job_input in job.input_datasets:
+                                    if not job_input.dataset:
+                                        continue
                                     if job_input.name == step_input.input_name:
                                         inputs[str(step_input.output_step.order_index)] = {
                                             "id": job_input.dataset_id, "src": src,
@@ -5149,6 +5219,15 @@ class WorkflowInvocation(UsesCreateAndUpdateTime, Dictifiable, RepresentById):
 
             rval['outputs'] = outputs
             rval['output_collections'] = output_collections
+
+            output_values = {}
+            for output_param in self.output_values:
+                label = output_param.workflow_output.label
+                if not label:
+                    continue
+                output_values[label] = output_param.value
+            rval['output_values'] = output_values
+
         return rval
 
     def update(self):
@@ -5356,6 +5435,11 @@ class WorkflowInvocationOutputDatasetCollectionAssociation(Dictifiable, Represen
     dict_collection_visible_keys = ['id', 'workflow_invocation_id', 'workflow_step_id', 'dataset_collection_id', 'name']
 
 
+class WorkflowInvocationOutputValue(Dictifiable, RepresentById):
+    """Represents a link to a specified or computed workflow parameter."""
+    dict_collection_visible_keys = ['id', 'workflow_invocation_id', 'workflow_step_id', 'value']
+
+
 class WorkflowInvocationStepOutputDatasetAssociation(Dictifiable, RepresentById):
     """Represents links to output datasets for the workflow."""
     dict_collection_visible_keys = ['id', 'workflow_invocation_step_id', 'dataset_id', 'output_name']
@@ -5384,7 +5468,7 @@ class MetadataFile(StorableObject, RepresentById):
             if self.object_store_id is None and da is not None:
                 self.object_store_id = da.dataset.object_store_id
             object_store = da.dataset.object_store
-            store_by = object_store.store_by
+            store_by = object_store.get_store_by(da.dataset)
             identifier = getattr(self, store_by)
             alt_name = "metadata_%s.dat" % identifier
             if not object_store.exists(self, extra_dir='_metadata_files', extra_dir_at_root=True, alt_name=alt_name):
@@ -5659,8 +5743,14 @@ class UserAuthnzToken(UserMixin, RepresentById):
 
     @classmethod
     def create_user(cls, *args, **kwargs):
+        """
+        This is used by PSA authnz, do not use directly.
+        Prefer using the user manager.
+        """
         model = cls.user_model()
         instance = model(*args, **kwargs)
+        if cls.get_users_by_email(instance.email).first():
+            raise Exception("User with this email '%s' already exists." % instance.email)
         instance.set_random_password()
         cls.sa_session.add(instance)
         cls.sa_session.flush()
@@ -5744,7 +5834,8 @@ class CloudAuthz(RepresentById):
 
 
 class Page(Dictifiable, RepresentById):
-    dict_element_visible_keys = ['id', 'title', 'latest_revision_id', 'slug', 'published', 'importable', 'deleted']
+    # username needed for slug generation
+    dict_element_visible_keys = ['id', 'title', 'latest_revision_id', 'slug', 'published', 'importable', 'deleted', 'username']
 
     def __init__(self):
         self.id = None
@@ -5764,14 +5855,20 @@ class Page(Dictifiable, RepresentById):
         rval['revision_ids'] = rev
         return rval
 
+    @property
+    def username(self):
+        return self.user.username
+
 
 class PageRevision(Dictifiable, RepresentById):
-    dict_element_visible_keys = ['id', 'page_id', 'title', 'content']
+    DEFAULT_CONTENT_FORMAT = 'html'
+    dict_element_visible_keys = ['id', 'page_id', 'title', 'content', 'content_format']
 
     def __init__(self):
         self.user = None
         self.title = None
         self.content = None
+        self.content_format = PageRevision.DEFAULT_CONTENT_FORMAT
 
     def to_dict(self, view='element'):
         rval = super(PageRevision, self).to_dict(view=view)

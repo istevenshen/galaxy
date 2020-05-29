@@ -2,7 +2,6 @@
 import logging
 import os
 import re
-import sys
 
 from galaxy.util import string_as_bool
 
@@ -35,7 +34,7 @@ class Configuration(object):
         self.use_remote_user = string_as_bool(kwargs.get("use_remote_user", "False"))
         self.require_login = string_as_bool(kwargs.get("require_login", "False"))
         self.template_path = resolve_path(kwargs.get("template_path", "templates"), self.root)
-        self.template_cache = resolve_path(kwargs.get("template_cache_path", "database/compiled_templates/reports"), self.root)
+        self.template_cache_path = resolve_path(kwargs.get("template_cache_path", "database/compiled_templates/reports"), self.root)
         self.allow_user_creation = string_as_bool(kwargs.get("allow_user_creation", "True"))
         self.allow_user_deletion = string_as_bool(kwargs.get("allow_user_deletion", "False"))
         self.log_actions = string_as_bool(kwargs.get('log_actions', 'False'))
@@ -49,6 +48,7 @@ class Configuration(object):
         self.screencasts_url = kwargs.get('screencasts_url', None)
         self.log_events = False
         self.cookie_path = kwargs.get("cookie_path", None)
+        self.cookie_domain = kwargs.get("cookie_domain", None)
         # Error logging with sentry
         self.sentry_dsn = kwargs.get('sentry_dsn', None)
 
@@ -107,34 +107,3 @@ def get_database_engine_options(kwargs):
                 value = conversions[key](value)
             rval[key] = value
     return rval
-
-
-def configure_logging(config):
-    """
-    Allow some basic logging configuration to be read from the cherrpy
-    config.
-    """
-    format = config.get("log_format", "%(name)s %(levelname)s %(asctime)s %(message)s")
-    level = logging._levelNames[config.get("log_level", "DEBUG")]
-    destination = config.get("log_destination", "stdout")
-    log.info("Logging at '%s' level to '%s'" % (level, destination))
-    # Get root logger
-    root = logging.getLogger()
-    # Set level
-    root.setLevel(level)
-    # Turn down paste httpserver logging
-    if level <= logging.DEBUG:
-        logging.getLogger("paste.httpserver.ThreadPool").setLevel(logging.WARN)
-    # Remove old handlers
-    for h in root.handlers[:]:
-        root.removeHandler(h)
-    # Create handler
-    if destination == "stdout":
-        handler = logging.StreamHandler(sys.stdout)
-    else:
-        handler = logging.FileHandler(destination)
-    # Create formatter
-    formatter = logging.Formatter(format)
-    # Hook everything up
-    handler.setFormatter(formatter)
-    root.addHandler(handler)

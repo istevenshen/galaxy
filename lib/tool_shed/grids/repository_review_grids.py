@@ -4,9 +4,9 @@ from markupsafe import escape
 from sqlalchemy import and_, false, null, or_, true
 
 from galaxy.webapps.reports.framework import grids
-from galaxy.webapps.tool_shed import model
 from tool_shed.grids.repository_grids import RepositoryGrid
 from tool_shed.util import hg_util, metadata_util
+from tool_shed.webapp import model
 
 log = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ class RepositoriesWithReviewsGrid(RepositoryGrid):
             # Restrict to revisions that have been reviewed.
             if repository.reviews:
                 rval = ''
-                repo = hg_util.get_repo_for_repository(trans.app, repository=repository)
+                repo = repository.hg_repo
                 for review in repository.reviews:
                     changeset_revision = review.changeset_revision
                     rev, label = hg_util.get_rev_label_from_changeset_revision(repo, changeset_revision)
